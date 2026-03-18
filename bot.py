@@ -1,6 +1,5 @@
 """
 Telegram-бот для психолога Зои Антонец
-Точка входа: bot.py
 pip install python-telegram-bot==21.6
 """
 
@@ -21,29 +20,25 @@ from telegram.ext import (
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ═══ НАСТРОЙКИ ════════════════════════════════════════════════════════════════
-
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 DB_PATH   = os.environ.get("DB_PATH", "zoya.db")
 CONTACT   = "@Zoiapsyonline"
 GROUP     = "https://t.me/Comebeakinself"
 ANON_BOT  = "https://t.me/anonaskbot"
 
-# Usernames админов (без @, строчными)
 ADMINS = {"zoiapsyonline", "imarkell"}
 
-# Состояния ConversationHandler для добавления события
 ASK_EVENT_TYPE, ASK_EVENT_TITLE, ASK_EVENT_DATE, ASK_EVENT_DESC, ASK_EVENT_LINK = range(5)
 
 # ═══ БАЗА ДАННЫХ ══════════════════════════════════════════════════════════════
 
-def db():
+def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
-    c = db()
+    c = get_db()
     c.executescript("""
         CREATE TABLE IF NOT EXISTS visitors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,67 +67,111 @@ def init_db():
             created_at TEXT,
             is_active INTEGER DEFAULT 1
         );
+        CREATE TABLE IF NOT EXISTS admin_ids (
+            username TEXT PRIMARY KEY,
+            tg_id INTEGER NOT NULL
+        );
     """)
     c.commit()
     c.close()
 
+def save_admin_id(username: str, tg_id: int):
+    """Сохраняем числовой ID админа при его /start."""
+    c = get_db()
+    c.execute("INSERT OR REPLACE INTO admin_ids(username, tg_id) VALUES(?,?)",
+              (username.lower(), tg_id))
+    c.commit()
+    c.close()
+
+def get_admin_tg_ids():
+    """Возвращаем список числовых ID всех зарегистрированных админов."""
+    c = get_db()
+    rows = c.execute("SELECT tg_id FROM admin_ids").fetchall()
+    c.close()
+    return [r["tg_id"] for r in rows]
+
+def is_new_visitor(tg_id: int) -> bool:
+    c = get_db()
+    exists = c.execute("SELECT 1 FROM visitors WHERE tg_id=?", (tg_id,)).fetchone()
+    c.close()
+    return exists is None
+
 def upsert_visitor(tg_id, username, full_name):
-    c = db()
+    c = get_db()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     if c.execute("SELECT 1 FROM visitors WHERE tg_id=?", (tg_id,)).fetchone():
-        c.execute("UPDATE visitors SET last_seen=?,visits=visits+1,username=?,full_name=? WHERE tg_id=?",
-                  (now, username, full_name, tg_id))
+        c.execute(
+            "UPDATE visitors SET last_seen=?,visits=visits+1,username=?,full_name=? WHERE tg_id=?",
+            (now, username, full_name, tg_id)
+        )
     else:
-        c.execute("INSERT INTO visitors(tg_id,username,full_name,first_seen,last_seen) VALUES(?,?,?,?,?)",
-                  (tg_id, username, full_name, now, now))
-    c.commit(); c.close()
+        c.execute(
+            "INSERT INTO visitors(tg_id,username,full_name,first_seen,last_seen) VALUES(?,?,?,?,?)",
+            (tg_id, username, full_name, now, now)
+        )
+    c.commit()
+    c.close()
 
 def add_lead(tg_id, username, full_name, topic):
-    c = db()
+    c = get_db()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    c.execute("INSERT INTO leads(tg_id,username,full_name,topic,created_at) VALUES(?,?,?,?,?)",
-              (tg_id, username, full_name, topic, now))
-    c.commit(); c.close()
+    c.execute(
+        "INSERT INTO leads(tg_id,username,full_name,topic,created_at) VALUES(?,?,?,?,?)",
+        (tg_id, username, full_name, topic, now)
+    )
+    c.commit()
+    c.close()
 
 def get_visitors(limit=50):
-    c = db()
+    c = get_db()
     rows = c.execute("SELECT * FROM visitors ORDER BY last_seen DESC LIMIT ?", (limit,)).fetchall()
-    c.close(); return [dict(r) for r in rows]
+    c.close()
+    return [dict(r) for r in rows]
 
 def get_leads(limit=50):
-    c = db()
+    c = get_db()
     rows = c.execute("SELECT * FROM leads ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
-    c.close(); return [dict(r) for r in rows]
+    c.close()
+    return [dict(r) for r in rows]
 
 def get_events(type_filter=None, active_only=False):
-    c = db()
+    c = get_db()
     q = "SELECT * FROM events WHERE 1=1"
     params = []
-    if type_filter: q += " AND type=?"; params.append(type_filter)
-    if active_only: q += " AND is_active=1"
+    if type_filter:
+        q += " AND type=?"
+        params.append(type_filter)
+    if active_only:
+        q += " AND is_active=1"
     q += " ORDER BY created_at DESC"
     rows = c.execute(q, params).fetchall()
-    c.close(); return [dict(r) for r in rows]
+    c.close()
+    return [dict(r) for r in rows]
 
 def add_event(type_, title, description, link, event_date):
-    c = db()
+    c = get_db()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    c.execute("INSERT INTO events(type,title,description,link,event_date,created_at) VALUES(?,?,?,?,?,?)",
-              (type_, title, description, link, event_date, now))
-    c.commit(); c.close()
+    c.execute(
+        "INSERT INTO events(type,title,description,link,event_date,created_at) VALUES(?,?,?,?,?,?)",
+        (type_, title, description, link, event_date, now)
+    )
+    c.commit()
+    c.close()
 
 def toggle_event(eid):
-    c = db()
+    c = get_db()
     c.execute("UPDATE events SET is_active=CASE WHEN is_active=1 THEN 0 ELSE 1 END WHERE id=?", (eid,))
-    c.commit(); c.close()
+    c.commit()
+    c.close()
 
 def delete_event(eid):
-    c = db()
+    c = get_db()
     c.execute("DELETE FROM events WHERE id=?", (eid,))
-    c.commit(); c.close()
+    c.commit()
+    c.close()
 
 def stats():
-    c = db()
+    c = get_db()
     tv = c.execute("SELECT COUNT(*) FROM visitors").fetchone()[0]
     tl = c.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
     td = datetime.now().strftime("%Y-%m-%d")
@@ -145,8 +184,26 @@ def stats():
 
 def is_admin(update: Update) -> bool:
     u = update.effective_user
-    if not u: return False
+    if not u:
+        return False
     return (u.username or "").lower() in ADMINS
+
+# ═══ УВЕДОМЛЕНИЯ ══════════════════════════════════════════════════════════════
+
+async def notify_admins(app, text: str):
+    """
+    Отправляет уведомление по числовым ID из таблицы admin_ids.
+    Работает только после того, как админ хотя бы раз написал /start боту.
+    """
+    ids = get_admin_tg_ids()
+    if not ids:
+        logger.warning("notify_admins: таблица admin_ids пуста — админы не зарегистрированы.")
+        return
+    for uid in ids:
+        try:
+            await app.bot.send_message(chat_id=uid, text=text)
+        except Exception as e:
+            logger.warning(f"notify_admins: не удалось отправить {uid}: {e}")
 
 # ═══ КЛАВИАТУРЫ ═══════════════════════════════════════════════════════════════
 
@@ -159,8 +216,8 @@ def kb_main():
 
 def kb_admin():
     return ReplyKeyboardMarkup([
-        [KeyboardButton("📊 Статистика"),      KeyboardButton("👥 Посетители")],
-        [KeyboardButton("📋 Лиды"),            KeyboardButton("📅 Управление событиями")],
+        [KeyboardButton("📊 Статистика"),       KeyboardButton("👥 Посетители")],
+        [KeyboardButton("📋 Лиды"),             KeyboardButton("📅 Управление событиями")],
         [KeyboardButton("➕ Добавить событие"), KeyboardButton("🔙 Режим пользователя")],
     ], resize_keyboard=True)
 
@@ -312,8 +369,7 @@ TEXTS = {
     "незакрытые обиды, усвоенные роли, страх близости или отвержения. "
     "Когда мы находим это — отношения начинают меняться.\n\n"
     "На консультации мы разберём, что происходит в ваших отношениях, "
-    "откуда это берётся и что можно изменить уже сейчас. "
-    "Первый шаг часто оказывается проще, чем кажется.\n\n"
+    "откуда это берётся и что можно изменить уже сейчас.\n\n"
     f"Запишитесь на первую сессию — {CONTACT}"
 ),
 "anxiety": (
@@ -325,8 +381,7 @@ TEXTS = {
     "и не приговор — это выученная реакция психики, которую можно переучить. "
     "Иррациональные страхи, хроническое чувство вины — всё это меняется.\n\n"
     "Если тревога уже давно управляет вашей жизнью — пришло время "
-    "вернуть этот контроль себе. Я помогу разобраться в её корнях "
-    "и найти путь к внутреннему спокойствию.\n\n"
+    "вернуть этот контроль себе.\n\n"
     f"Запишитесь на первую сессию — {CONTACT}"
 ),
 "crisis": (
@@ -336,10 +391,8 @@ TEXTS = {
     "Растерянность, пустота, ощущение что земля ушла из-под ног — "
     "это нормальные реакции на ненормальные обстоятельства.\n\n"
     "Но оставаться с этим в одиночестве необязательно. В кризисе "
-    "важно иметь рядом того, кто поможет устоять, а не торопит "
-    "с «принятием» и «движением вперёд».\n\n"
-    "Вместе мы найдём внутренние опоры, которые есть у вас даже сейчас, "
-    "и постепенно выстроим дорогу к новому этапу. "
+    "важно иметь рядом того, кто поможет устоять.\n\n"
+    "Вместе мы найдём внутренние опоры и постепенно выстроим дорогу к новому этапу. "
     "Кризис — это не конец истории. Иногда это её самая важная глава.\n\n"
     f"Запишитесь на первую сессию — {CONTACT}"
 ),
@@ -352,9 +405,8 @@ TEXTS = {
     "Паттерны из дисфункциональной семьи воспроизводятся автоматически: "
     "вы спасаете, терпите, берёте чужую ответственность — и не понимаете, "
     "почему снова оказываетесь в том же сценарии.\n\n"
-    "Это можно изменить. Вы научитесь отличать свои границы от чужих, "
-    "перестанете нести то, что вам не принадлежит, и откроете — "
-    "каково это, жить для себя, а не для других.\n\n"
+    "Это можно изменить. Вы научитесь отличать свои границы от чужих "
+    "и откроете — каково это, жить для себя, а не для других.\n\n"
     f"Запишитесь на первую сессию — {CONTACT}"
 ),
 "self_esteem": (
@@ -363,11 +415,9 @@ TEXTS = {
     "частых фраз, с которыми приходят на консультацию. "
     "За ней почти всегда стоит одно: человек живёт не своей жизнью.\n\n"
     "Низкая самооценка — это не врождённый дефект. Это результат "
-    "усвоенных посланий: «ты недостаточно хорош», «твои желания не важны». "
-    "Со временем они становятся внутренним голосом и управляют всем.\n\n"
+    "усвоенных посланий: «ты недостаточно хорош», «твои желания не важны».\n\n"
     "На сессиях мы найдём, откуда этот голос взялся, и начнём "
-    "выстраивать новую опору — изнутри, а не из чужих ожиданий. "
-    "Устойчивая самооценка — это навык, которому можно научиться.\n\n"
+    "выстраивать новую опору — изнутри, а не из чужих ожиданий.\n\n"
     f"Запишитесь на первую сессию — {CONTACT}"
 ),
 "finding_self": (
@@ -376,11 +426,9 @@ TEXTS = {
     "что она — его, нет. Правильная работа, правильные отношения — "
     "но что-то важное потерялось по дороге.\n\n"
     "Поиск себя — это не инфантильный кризис. Когда мы живём в отрыве "
-    "от собственных ценностей, рано или поздно приходит пустота "
-    "или ощущение чужой жизни.\n\n"
-    "Вместе мы разберёмся, где вы потеряли себя, что действительно "
-    "важно для вас — а не для родителей или общества. "
-    "И найдём путь обратно — к себе настоящему.\n\n"
+    "от собственных ценностей, рано или поздно приходит пустота.\n\n"
+    "Вместе мы разберёмся, что действительно важно для вас — "
+    "а не для родителей или общества. И найдём путь обратно — к себе настоящему.\n\n"
     f"Запишитесь на первую сессию — {CONTACT}"
 ),
 "contacts": (
@@ -445,49 +493,46 @@ TOPIC_NAMES = {
     "signup_finding_self": "Поиск себя",
 }
 
-# ═══ УВЕДОМЛЕНИЯ АДМИНАМ ══════════════════════════════════════════════════════
-
-async def notify_admins(app, text):
-    """Шлёт уведомление админам напрямую по @username."""
-    for uname in ADMINS:
-        try:
-            await app.bot.send_message(chat_id=f"@{uname}", text=text)
-        except Exception as e:
-            logger.warning(f"Не удалось уведомить @{uname}: {e}")
-
-# ═══ ХЭНДЛЕРЫ — ПОЛЬЗОВАТЕЛЬ ══════════════════════════════════════════════════
+# ═══ ХЭНДЛЕРЫ ═════════════════════════════════════════════════════════════════
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    is_new = not db().execute("SELECT 1 FROM visitors WHERE tg_id=?", (user.id,)).fetchone()
-    upsert_visitor(user.id, user.username or "", user.full_name or "")
+    username = (user.username or "").lower()
+    full_name = user.full_name or "без имени"
 
-    if is_new:
-        uname = f"@{user.username}" if user.username else "без username"
-        await notify_admins(ctx.application,
-            f"👋 Новый пользователь!\n\n"
-            f"👤 {user.full_name or 'без имени'}\n"
-            f"📎 {uname}\n"
-            f"🆔 {user.id}"
-        )
-
-    # Если админ — предложить режим
-    if is_admin(update):
+    # Если это админ — сохраняем его числовой ID для уведомлений
+    if username in ADMINS:
+        save_admin_id(username, user.id)
         await update.message.reply_text(
-            f"Привет, {user.first_name}! Вы вошли как администратор.\n"
-            "Выберите режим:",
+            f"Привет, {user.first_name}! Вы вошли как администратор.\nВыберите режим:",
             reply_markup=ReplyKeyboardMarkup([
                 [KeyboardButton("🛠 Режим администратора")],
                 [KeyboardButton("👤 Режим пользователя")],
             ], resize_keyboard=True)
         )
-    else:
-        await update.message.reply_text(TEXTS["welcome"], reply_markup=kb_main())
+        return
+
+    # Обычный пользователь
+    new = is_new_visitor(user.id)
+    upsert_visitor(user.id, user.username or "", full_name)
+
+    if new:
+        uname_display = f"@{user.username}" if user.username else f"ID {user.id}"
+        await notify_admins(
+            ctx.application,
+            f"👋 Новый пользователь!\n\n"
+            f"👤 {full_name}\n"
+            f"📎 {uname_display}\n"
+            f"🆔 {user.id}"
+        )
+
+    await update.message.reply_text(TEXTS["welcome"], reply_markup=kb_main())
+
 
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     raw = (update.message.text or "").strip()
 
-    # ── Переключение режимов для админов ──────────────────────────────────────
+    # Переключение режимов для админов
     if raw == "🛠 Режим администратора":
         if not is_admin(update):
             await update.message.reply_text("У вас нет прав доступа.")
@@ -502,17 +547,17 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(TEXTS["welcome"], reply_markup=kb_main())
         return
 
-    # ── ADMIN команды ─────────────────────────────────────────────────────────
+    # Admin команды
     if raw == "📊 Статистика" and is_admin(update):
         s = stats()
-        text = (
-            "📊 Статистика бота\n\n"
+        await update.message.reply_text(
+            f"📊 Статистика бота\n\n"
             f"👥 Всего посетителей: {s['total_visitors']}\n"
             f"📋 Всего заявок: {s['total_leads']}\n"
             f"🌅 Новых сегодня: {s['today_visitors']}\n"
-            f"🔥 Заявок сегодня: {s['today_leads']}"
+            f"🔥 Заявок сегодня: {s['today_leads']}",
+            reply_markup=kb_admin()
         )
-        await update.message.reply_text(text, reply_markup=kb_admin())
         return
 
     if raw == "👥 Посетители" and is_admin(update):
@@ -524,7 +569,6 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         for i, v in enumerate(visitors, 1):
             uname = f"@{v['username']}" if v['username'] else f"ID {v['tg_id']}"
             lines.append(f"{i}. {v['full_name'] or '—'} | {uname} | визитов: {v['visits']} | {v['last_seen']}")
-        # Telegram limit 4096 chars — разбиваем если надо
         msg = "\n".join(lines)
         if len(msg) > 4000:
             msg = msg[:4000] + "\n…(обрезано)"
@@ -550,34 +594,28 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         evts = get_events()
         if not evts:
             await update.message.reply_text(
-                "Событий пока нет.\nНажмите «➕ Добавить событие» чтобы создать первое.",
+                "Событий пока нет.\nНажмите «➕ Добавить событие».",
                 reply_markup=kb_admin()
             )
             return
         await update.message.reply_text(
-            "📅 Управление событиями\n\n"
-            "✅ — активно (видно пользователям)\n"
-            "🔇 — скрыто\n"
-            "🗑 — удалить\n\n"
-            "Нажмите на название чтобы скрыть/показать:",
+            "📅 Управление событиями\n✅ активно | 🔇 скрыто | 🗑 удалить",
             reply_markup=event_manage_kb(evts)
         )
         return
 
-    # ── Назад ─────────────────────────────────────────────────────────────────
     if raw == "⬅️ Назад":
         await update.message.reply_text(TEXTS["back_to_main"], reply_markup=kb_main())
         return
 
-    # ── События из БД ─────────────────────────────────────────────────────────
     if raw == "🎥 Прошедшие эфиры":
         await update.message.reply_text(events_text("past"), reply_markup=kb_events())
         return
+
     if raw == "📆 Предстоящие события":
         await update.message.reply_text(events_text("upcoming"), reply_markup=kb_events())
         return
 
-    # ── Обычный роутинг ───────────────────────────────────────────────────────
     route = ROUTES.get(raw)
     if route is None:
         for key in ROUTES:
@@ -596,13 +634,13 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(TEXTS[text_key], reply_markup=keyboard_fn())
 
+
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
     user = update.effective_user
 
-    # ── Управление событиями (admin inline) ───────────────────────────────────
     if data.startswith("etoggle_") and is_admin(update):
         eid = int(data.split("_")[1])
         toggle_event(eid)
@@ -624,21 +662,21 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Управление событиями закрыто.")
         return
 
-    # ── Кнопка «Записаться» ───────────────────────────────────────────────────
+    # Кнопка «Записаться»
     topic_name = TOPIC_NAMES.get(data, data)
     add_lead(user.id, user.username or "", user.full_name or "", topic_name)
-
-    uname = f"@{user.username}" if user.username else "без username"
-    await notify_admins(ctx.application,
+    uname_display = f"@{user.username}" if user.username else f"ID {user.id}"
+    await notify_admins(
+        ctx.application,
         f"🔥 Новая заявка на запись!\n\n"
         f"👤 {user.full_name or 'без имени'}\n"
-        f"📎 {uname}\n"
+        f"📎 {uname_display}\n"
         f"📌 Тема: {topic_name}\n"
         f"🆔 {user.id}"
     )
-
     reply = SIGNUP_REPLIES.get(data, f"Для записи: {CONTACT}")
     await query.message.reply_text(reply)
+
 
 # ═══ ДИАЛОГ ДОБАВЛЕНИЯ СОБЫТИЯ ════════════════════════════════════════════════
 
@@ -646,7 +684,7 @@ async def add_event_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update):
         return ConversationHandler.END
     await update.message.reply_text(
-        "Тип события?\n\n1 — 📆 Предстоящее\n2 — 🎥 Прошедшее",
+        "Тип события?",
         reply_markup=ReplyKeyboardMarkup(
             [[KeyboardButton("📆 Предстоящее"), KeyboardButton("🎥 Прошедшее")],
              [KeyboardButton("❌ Отмена")]],
@@ -666,26 +704,26 @@ async def got_event_type(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def got_event_title(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data["event_title"] = update.message.text.strip()
-    await update.message.reply_text("Дата (например: 25 апреля 2026) или «-» чтобы пропустить:")
+    await update.message.reply_text("Дата (например: 25 апреля 2026) или «-» пропустить:")
     return ASK_EVENT_DATE
 
 async def got_event_date(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     t = update.message.text.strip()
     ctx.user_data["event_date"] = "" if t == "-" else t
-    await update.message.reply_text("Краткое описание (или «-» чтобы пропустить):")
+    await update.message.reply_text("Краткое описание (или «-» пропустить):")
     return ASK_EVENT_DESC
 
 async def got_event_desc(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     t = update.message.text.strip()
     ctx.user_data["event_desc"] = "" if t == "-" else t
-    await update.message.reply_text("Ссылка (или «-» чтобы пропустить):")
+    await update.message.reply_text("Ссылка (или «-» пропустить):")
     return ASK_EVENT_LINK
 
 async def got_event_link(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     t = update.message.text.strip()
     link = "" if t == "-" else t
     d = ctx.user_data
-    add_event(d["event_type"], d["event_title"], d.get("event_desc",""), link, d.get("event_date",""))
+    add_event(d["event_type"], d["event_title"], d.get("event_desc", ""), link, d.get("event_date", ""))
     type_label = "Предстоящее" if d["event_type"] == "upcoming" else "Прошедшее"
     await update.message.reply_text(
         f"✅ Событие добавлено!\n\n"
@@ -710,7 +748,6 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # ConversationHandler для добавления событий
     add_event_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^➕ Добавить событие$"), add_event_start)],
         states={
